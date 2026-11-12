@@ -208,6 +208,109 @@ err:
     return -1;
 }
 
+int libobfuscator_main(int argc, char *argv[]) {
+    int decrypt = 0;
+    if (argc > 2 || (argc == 2 && (strcmp(argv[1], "-d") != 0 && strcmp(argv[1], "-k") != 0))) {
+        fprintf(stderr, "Usage: %s [-d] < stdin > stdout\n", argv[0]);
+        fprintf(stderr, "Usage: %s -k\n", argv[0]);
+        return 2;
+    }
+    if (argc ==2 && strcmp(argv[1], "-k") == 0) {
+        unsigned char key[KEY_LEN];
+        if (RAND_bytes(key, KEY_LEN) != 1) {
+            fprintf(stderr, "failed to generate key\n");
+            OPENSSL_cleanse(key, sizeof(key));
+            return 1;
+        }
+        for (size_t i = 0; i < sizeof(key); i++) {
+            if (printf("%02x", (unsigned int)key[i]) < 0) {
+                perror("printf()");
+                OPENSSL_cleanse(key, sizeof(key));
+                return 1;
+            }
+        }
+        OPENSSL_cleanse(key, sizeof(key));
+        if (fputc('\n', stdout) == EOF || fflush(stdout) == EOF) {
+            perror("stdout");
+            return 1;
+        }
+        return 0;
+    } else if (argc == 2 && strcmp(argv[1], "-d") == 0) {
+        decrypt = 1;
+    }
+    char *line = NULL;
+    size_t line_capacity = 0;
+    ssize_t input_length;
+    int result = 0;
+    while ((input_length = getline(&line, &line_capacity, stdin)) != -1) {
+        size_t line_length = (size_t)input_length;
+        if (line_length > 0 && line[line_length - 1] == '\n') {
+            line[--line_length] = '\0';
+        }
+        if (line_length > 0 && line[line_length - 1] == '\r') {
+            line[--line_length] = '\0';
+        }
+        if (decrypt) {
+            unsigned char *plaintext = malloc(line_length + 1);
+            if (!plaintext) {
+                perror("malloc()");
+                result = 1;
+                break;
+            }
+            int plaintext_length = deobfuscate(line, (int)line_length, plaintext, line_length + 1);
+            if (plaintext_length < 0) {
+                free(plaintext);
+                result = 1;
+                break;
+            }
+            if (fwrite(plaintext, 1, (size_t)plaintext_length, stdout) != (size_t)plaintext_length || fputc('\n', stdout) == EOF) {
+                perror("fwrite()/fputc()");
+                OPENSSL_cleanse(plaintext, line_length + 1);
+                free(plaintext);
+                result = 1;
+                break;
+            }
+            OPENSSL_cleanse(plaintext, line_length + 1);
+            free(plaintext);
+        } else {
+            size_t raw_capacity = line_length + 64; // SALT_LEN + GCM_NONCE_LEN + GCM_TAG_LEN (16 + 12 + 16 = 48, rounded up for safety)
+            size_t encoded_capacity = ((raw_capacity + 2) / 3) * 4 + 1;
+            char *encoded = malloc(encoded_capacity);
+            if (!encoded) {
+                perror("malloc()");
+                result = 1;
+                break;
+            }
+            int encoded_length = obfuscate((const unsigned char *)line, (int)line_length, encoded, encoded_capacity);
+            if (encoded_length < 0) {
+                free(encoded);
+                result = 1;
+                break;
+            }
+            if (fwrite(encoded, 1, (size_t)encoded_length, stdout) != (size_t)encoded_length || fputc('\n', stdout) == EOF) {
+                perror("fwrite()/fputc()");
+                free(encoded);
+                result = 1;
+                break;
+            }
+            free(encoded);
+        }
+    }
+    if (ferror(stdin)) {
+        perror("ferror()");
+        result = 1;
+    }
+    if (fflush(stdout) == EOF) {
+        perror("fflush()");
+        result = 1;
+    }
+    if (line) {
+        OPENSSL_cleanse(line, line_capacity);
+        free(line);
+    }
+    return result;
+}
+
 static int append_str(char *passphrase, const char *str) {
     size_t length = strlen(str);
     size_t current_length = strlen(passphrase);
@@ -220,8 +323,7 @@ static int append_str(char *passphrase, const char *str) {
     return 1;
 }
 
-static int append_path_text(char **output, size_t *length, size_t *capacity,
-                            const char *text, size_t text_length) {
+static int append_path_text(char **output, size_t *length, size_t *capacity, const char *text, size_t text_length) {
     if (text_length > SIZE_MAX - *length - 1) {
         fprintf(stderr, "OBFUSCATOR: percorso file troppo lungo\n");
         return 0;
@@ -436,107 +538,4 @@ static int derive_key(const unsigned char *salt, unsigned char key[KEY_LEN]) {
 #endif
     OPENSSL_cleanse(passphrase, PASSPHRASE_MAX_LEN);
     return 0;
-}
-
-int libobfuscator_main(int argc, char *argv[]) {
-    int decrypt = 0;
-    if (argc > 2 || (argc == 2 && (strcmp(argv[1], "-d") != 0 && strcmp(argv[1], "-k") != 0))) {
-        fprintf(stderr, "Usage: %s [-d] < stdin > stdout\n", argv[0]);
-        fprintf(stderr, "Usage: %s -k\n", argv[0]);
-        return 2;
-    }
-    if (argc ==2 && strcmp(argv[1], "-k") == 0) {
-        unsigned char key[KEY_LEN];
-        if (RAND_bytes(key, KEY_LEN) != 1) {
-            fprintf(stderr, "failed to generate key\n");
-            OPENSSL_cleanse(key, sizeof(key));
-            return 1;
-        }
-        for (size_t i = 0; i < sizeof(key); i++) {
-            if (printf("%02x", (unsigned int)key[i]) < 0) {
-                perror("printf()");
-                OPENSSL_cleanse(key, sizeof(key));
-                return 1;
-            }
-        }
-        OPENSSL_cleanse(key, sizeof(key));
-        if (fputc('\n', stdout) == EOF || fflush(stdout) == EOF) {
-            perror("stdout");
-            return 1;
-        }
-        return 0;
-    } else if (argc == 2 && strcmp(argv[1], "-d") == 0) {
-        decrypt = 1;
-    }
-    char *line = NULL;
-    size_t line_capacity = 0;
-    ssize_t input_length;
-    int result = 0;
-    while ((input_length = getline(&line, &line_capacity, stdin)) != -1) {
-        size_t line_length = (size_t)input_length;
-        if (line_length > 0 && line[line_length - 1] == '\n') {
-            line[--line_length] = '\0';
-        }
-        if (line_length > 0 && line[line_length - 1] == '\r') {
-            line[--line_length] = '\0';
-        }
-        if (decrypt) {
-            unsigned char *plaintext = malloc(line_length + 1);
-            if (!plaintext) {
-                perror("malloc()");
-                result = 1;
-                break;
-            }
-            int plaintext_length = deobfuscate(line, (int)line_length, plaintext, line_length + 1);
-            if (plaintext_length < 0) {
-                free(plaintext);
-                result = 1;
-                break;
-            }
-            if (fwrite(plaintext, 1, (size_t)plaintext_length, stdout) != (size_t)plaintext_length || fputc('\n', stdout) == EOF) {
-                perror("fwrite()/fputc()");
-                OPENSSL_cleanse(plaintext, line_length + 1);
-                free(plaintext);
-                result = 1;
-                break;
-            }
-            OPENSSL_cleanse(plaintext, line_length + 1);
-            free(plaintext);
-        } else {
-            size_t raw_capacity = line_length + 64; // SALT_LEN + GCM_NONCE_LEN + GCM_TAG_LEN (16 + 12 + 16 = 48, rounded up for safety)
-            size_t encoded_capacity = ((raw_capacity + 2) / 3) * 4 + 1;
-            char *encoded = malloc(encoded_capacity);
-            if (!encoded) {
-                perror("malloc()");
-                result = 1;
-                break;
-            }
-            int encoded_length = obfuscate((const unsigned char *)line, (int)line_length, encoded, encoded_capacity);
-            if (encoded_length < 0) {
-                free(encoded);
-                result = 1;
-                break;
-            }
-            if (fwrite(encoded, 1, (size_t)encoded_length, stdout) != (size_t)encoded_length || fputc('\n', stdout) == EOF) {
-                perror("fwrite()/fputc()");
-                free(encoded);
-                result = 1;
-                break;
-            }
-            free(encoded);
-        }
-    }
-    if (ferror(stdin)) {
-        perror("ferror()");
-        result = 1;
-    }
-    if (fflush(stdout) == EOF) {
-        perror("fflush()");
-        result = 1;
-    }
-    if (line) {
-        OPENSSL_cleanse(line, line_capacity);
-        free(line);
-    }
-    return result;
 }
