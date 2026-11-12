@@ -1,0 +1,6 @@
+*.o
+*.so
+.depend
+.vscode
+hide_strings
+obfuscator_secrets.h
