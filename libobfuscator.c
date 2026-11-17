@@ -485,9 +485,9 @@ static int get_passphrase(char passphrase[PASSPHRASE_MAX_LEN]) {
 #else
         char *ptr=passphrase;
 #endif
+        char entry[OBFUSCATOR_SECRETS_MAX_LEN];
         for (int i=0;; ) {
-            const char *entry = obfuscator_secrets_string(i++);
-            if (!entry[0]) break;
+            if (!obfuscator_secrets_string(i++, entry)) break;
             int ok;
             if (strncmp(entry, "file:", 5) == 0) {
                 ok = append_file(ptr, entry + 5);

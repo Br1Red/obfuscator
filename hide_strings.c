@@ -89,7 +89,7 @@ int main(int argc, char *argv[]) {
         perror("fopen(input)");
         goto err;
     }
-    int num_linee = 0;
+    int num_lines = 0;
     size_t max_len = 0;
     for (;;) {
         ssize_t line_length = getline(&buffer, &buffer_capacity, in);
@@ -107,7 +107,7 @@ int main(int argc, char *argv[]) {
         if (len + 1 > max_len) {
             max_len = len + 1;
         }
-        num_linee++;
+        num_lines++;
     }
     if (fseek(in, 0, SEEK_SET) != 0) {
         perror("fseek()");
@@ -136,9 +136,11 @@ int main(int argc, char *argv[]) {
     fprintf(out, "// Do not edit manually\n\n");
     fprintf(out, "#include <stdint.h>\n");
     fprintf(out, "#include <stddef.h>\n\n");
-    fprintf(out, "static inline const char* %s_string(int number) {\n", output_prefix_lowercase);
+    fprintf(out, "#define %s_NUM_STRINGS %d\n", output_prefix, num_lines);
+    fprintf(out, "#define %s_MAX_LEN %zu\n\n", output_prefix, max_len);
+    fprintf(out, "static inline int %s_string(int number, char buffer[%zu]) {\n", output_prefix_lowercase, max_len);
     fprintf(out, "    const uint32_t key[4] = {UINT32_C(0x%08" PRIX32 "), UINT32_C(0x%08" PRIX32 "), UINT32_C(0x%08" PRIX32 "), UINT32_C(0x%08" PRIX32 ")};\n", key[0], key[1], key[2], key[3]);
-    fprintf(out, "    const uint8_t strings[%d][%zu] = {\n", num_linee, max_len);
+    fprintf(out, "    const uint8_t strings[%d][%zu] = {\n", num_lines, max_len);
     int i = 0;
     for (;;) {
         ssize_t line_length = getline(&buffer, &buffer_capacity, in);
@@ -154,28 +156,28 @@ int main(int argc, char *argv[]) {
         size_t len = prepare_line(buffer, (size_t)line_length);
         if (len == 0) continue;
         write_obfuscated_string(out, buffer, len, (size_t)i, key);
-        if (i < num_linee - 1) {
+        if (i < num_lines - 1) {
             fputc(',', out);
         }
         fputc('\n', out);
         i++;
     }
     fprintf(out, "    };\n");
-    fprintf(out, "    static char buffer[%zu];\n", max_len);
-    fprintf(out, "    if (number < 0 || number >= %d) {\n", num_linee);
-    fprintf(out, "        return \"\";\n");
+    fprintf(out, "    if (number < 0 || number >= %d) {\n", num_lines);
+    fprintf(out, "        buffer[0]='\\0';\n");
+    fprintf(out, "    } else {\n");
+    fprintf(out, "        for (size_t i = 0; i < %zu; i++) {\n", max_len);
+    fprintf(out, "            uint32_t k = key[(i + (size_t)number) %% 4];\n");
+    fprintf(out, "            uint8_t enc = strings[number][i];\n");
+    fprintf(out, "            enc ^= (uint8_t)(k >> 24);\n");
+    fprintf(out, "            enc = (uint8_t)(enc + (uint8_t)(k >> 16));\n");
+    fprintf(out, "            enc ^= (uint8_t)(k >> 8);\n");
+    fprintf(out, "            char dec = (char)(enc - (uint8_t)k);\n");
+    fprintf(out, "            buffer[i] = dec;\n");
+    fprintf(out, "            if (dec == '\\0') break;\n");
+    fprintf(out, "        }\n");
     fprintf(out, "    }\n");
-    fprintf(out, "    for (size_t i = 0; i < %zu; i++) {\n", max_len);
-    fprintf(out, "        uint32_t k = key[(i + (size_t)number) %% 4];\n");
-    fprintf(out, "        uint8_t enc = strings[number][i];\n");
-    fprintf(out, "        enc ^= (uint8_t)(k >> 24);\n");
-    fprintf(out, "        enc = (uint8_t)(enc + (uint8_t)(k >> 16));\n");
-    fprintf(out, "        enc ^= (uint8_t)(k >> 8);\n");
-    fprintf(out, "        char dec = (char)(enc - (uint8_t)k);\n");
-    fprintf(out, "        buffer[i] = dec;\n");
-    fprintf(out, "        if (dec == '\\0') break;\n");
-    fprintf(out, "    }\n");
-    fprintf(out, "    return buffer;\n");
+    fprintf(out, "    return !!buffer[0];\n");
     fprintf(out, "}\n\n");
     fprintf(out, "#endif\n");
     if (fclose(in) != 0) {
