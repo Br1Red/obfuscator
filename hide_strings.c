@@ -4,12 +4,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <limits.h>
 #include <inttypes.h>
 #include <ctype.h>
-#include <time.h>
+#include <openssl/rand.h>
 
-static size_t prepare_line(char *line) {
-    size_t len = strlen(line);
+static size_t prepare_line(char *line, size_t line_length) {
+    size_t len = strnlen(line, line_length);
     while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r')) {
         line[--len] = '\0';
     }
@@ -32,12 +33,11 @@ static void write_guard(FILE *out, const char *directive, const char *prefix) {
     fprintf(out, "_H__\n");
 }
 
-void write_obfuscated_string(FILE *out, const char *str, const uint32_t key[4]) {
-    size_t len = strlen(str);
+void write_obfuscated_string(FILE *out, const char *str, size_t len, size_t string_index, const uint32_t key[4]) {
     fprintf(out, "        {");
     for (size_t i = 0; i <= len; i++) {
         uint8_t c = (uint8_t)str[i];
-        uint32_t k = key[i % 4];
+        uint32_t k = key[(i + string_index) % 4];
         uint8_t enc = (uint8_t)(c + (uint8_t)k);
         enc ^= (uint8_t)(k >> 8);
         enc = (uint8_t)(enc - (uint8_t)(k >> 16));
@@ -67,7 +67,7 @@ int main(int argc, char *argv[]) {
     const char *suffix = strrchr(output_basename, '.');
     size_t output_prefix_len = suffix && suffix != output_basename
                                    ? (size_t)(suffix - output_basename)
-                                   : strlen(output_basename);
+                                   : strnlen(output_basename, INT_MAX);
     output_prefix = malloc(output_prefix_len + 1);
     if (!output_prefix) {
         perror("malloc()");
@@ -102,7 +102,7 @@ int main(int argc, char *argv[]) {
             }
             break;
         }
-        size_t len = prepare_line(buffer);
+        size_t len = prepare_line(buffer, (size_t)line_length);
         if (len == 0) continue;
         if (len + 1 > max_len) {
             max_len = len + 1;
@@ -124,13 +124,10 @@ int main(int argc, char *argv[]) {
         perror("fopen(output)");
         goto err;
     }
-    srand((unsigned int)time(NULL));
     uint32_t key[4];
-    for (int i = 0; i < 4; i++) {
-        key[i] = ((uint32_t)(rand() & 0xFF) << 24) |
-                 ((uint32_t)(rand() & 0xFF) << 16) |
-                 ((uint32_t)(rand() & 0xFF) << 8) |
-                 (uint32_t)(rand() & 0xFF);
+    if (RAND_bytes((unsigned char *)key, sizeof(key)) != 1) {
+        fprintf(stderr, "RAND_bytes() failed\n");
+        goto err;
     }
     write_guard(out, "ifndef", output_prefix);
     write_guard(out, "define", output_prefix);
@@ -154,8 +151,9 @@ int main(int argc, char *argv[]) {
             }
             break;
         }
-        if (prepare_line(buffer) == 0) continue;
-        write_obfuscated_string(out, buffer, key);
+        size_t len = prepare_line(buffer, (size_t)line_length);
+        if (len == 0) continue;
+        write_obfuscated_string(out, buffer, len, (size_t)i, key);
         if (i < num_linee - 1) {
             fputc(',', out);
         }
@@ -168,7 +166,7 @@ int main(int argc, char *argv[]) {
     fprintf(out, "        return \"\";\n");
     fprintf(out, "    }\n");
     fprintf(out, "    for (size_t i = 0; i < %zu; i++) {\n", max_len);
-    fprintf(out, "        uint32_t k = key[i %% 4];\n");
+    fprintf(out, "        uint32_t k = key[(i + (size_t)number) %% 4];\n");
     fprintf(out, "        uint8_t enc = strings[number][i];\n");
     fprintf(out, "        enc ^= (uint8_t)(k >> 24);\n");
     fprintf(out, "        enc = (uint8_t)(enc + (uint8_t)(k >> 16));\n");

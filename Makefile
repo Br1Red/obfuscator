@@ -1,5 +1,6 @@
 CFLAGS += -std=gnu11 -O2 -Wall -Wextra -Wformat=2 -fstack-protector-strong -D_FORTIFY_SOURCE=3
-OBFUSCATOR_LDLIBS = -lcrypto -largon2
+LDLIBS = -lcrypto
+OBFUSCATOR_LDLIBS = -largon2
 
 .PHONY: all clean
 .DELETE_ON_ERROR:

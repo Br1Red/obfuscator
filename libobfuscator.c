@@ -312,8 +312,8 @@ int libobfuscator_main(int argc, char *argv[]) {
 }
 
 static int append_str(char *passphrase, const char *str) {
-    size_t length = strlen(str);
-    size_t current_length = strlen(passphrase);
+    size_t length = strnlen(str, PASSPHRASE_MAX_LEN);
+    size_t current_length = strnlen(passphrase, PASSPHRASE_MAX_LEN);
     if (current_length + length >= PASSPHRASE_MAX_LEN) {
         fprintf(stderr, "OBFUSCATOR: contenuto della passphrase troppo lungo o non valido\n");
         return 0;
@@ -372,7 +372,7 @@ static int append_environment_variable(char **output, size_t *length, size_t *ca
         free(name);
         return 0;
     }
-    int result = append_path_text(output, length, capacity, value, strlen(value));
+    int result = append_path_text(output, length, capacity, value, strnlen(value, SIZE_MAX - *length));
     free(name);
     return result;
 }
@@ -454,7 +454,7 @@ static int append_file(char *passphrase, const char *path) {
     }
     char line[128];
     while (fgets(line, sizeof(line), file)) {
-        size_t length = strlen(line);
+        size_t length = strnlen(line, sizeof(line));
         while (length > 0 && (line[length - 1] == '\r' || line[length - 1] == '\n')) {
             line[--length] = '\0';
         }
@@ -520,7 +520,7 @@ static int derive_key(const unsigned char *salt, unsigned char key[KEY_LEN]) {
         return -1;
     }
 #ifdef OBFUSCATOR_USE_ARGON2
-    int result = argon2id_hash_raw(ARGON2_TIME_COST, ARGON2_MEMORY_COST_KIB, ARGON2_PARALLELISM, passphrase, strlen(passphrase), salt, SALT_LEN, key, KEY_LEN);
+    int result = argon2id_hash_raw(ARGON2_TIME_COST, ARGON2_MEMORY_COST_KIB, ARGON2_PARALLELISM, passphrase, strnlen(passphrase, PASSPHRASE_MAX_LEN), salt, SALT_LEN, key, KEY_LEN);
     if (result != ARGON2_OK) {
         fprintf(stderr, "OBFUSCATOR: Argon2id: %s\n", argon2_error_message(result));
         OPENSSL_cleanse(passphrase, PASSPHRASE_MAX_LEN);
@@ -528,7 +528,7 @@ static int derive_key(const unsigned char *salt, unsigned char key[KEY_LEN]) {
         return -1;
     }
 #else
-    int result = PKCS5_PBKDF2_HMAC(passphrase, (int)strlen(passphrase), salt, SALT_LEN, PBKDF2_ITERATIONS, EVP_sha256(), KEY_LEN, key);
+    int result = PKCS5_PBKDF2_HMAC(passphrase, (int)strnlen(passphrase, PASSPHRASE_MAX_LEN), salt, SALT_LEN, PBKDF2_ITERATIONS, EVP_sha256(), KEY_LEN, key);
     if (result != 1) {
         fprintf(stderr, "OBFUSCATOR: PBKDF2 fallita\n");
         OPENSSL_cleanse(passphrase, PASSPHRASE_MAX_LEN);
