@@ -163,6 +163,7 @@ int main(int argc, char *argv[]) {
         i++;
     }
     fprintf(out, "    };\n");
+    fprintf(out, "    if (!buffer) return 0;\n");
     fprintf(out, "    if (number < 0 || number >= %d) {\n", num_lines);
     fprintf(out, "        buffer[0]='\\0';\n");
     fprintf(out, "    } else {\n");
