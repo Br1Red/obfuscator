@@ -64,6 +64,26 @@ umask creates the file with mode `0400` (readable only by its owner), which is
 recommended for protecting the key. If the file already exists, set its mode
 explicitly with `chmod 0400 secret_key.txt`.
 
+For a service managed by systemd, you can instead supply the key as a systemd
+credential. Add this directive to `obfuscator_secrets.txt`:
+
+```text
+file:$CREDENTIALS_DIRECTORY/obfuscator_key.txt
+```
+
+Then configure the service to provide a credential with that name. For example,
+to have systemd decrypt a credential from its encrypted credential store:
+
+```ini
+[Service]
+LoadCredentialEncrypted=obfuscator_key.txt:/etc/credstore.encrypted/obfuscator_key
+```
+
+Systemd makes the credential available to the service in its credentials
+directory, referenced by `CREDENTIALS_DIRECTORY`. You can also use
+`LoadCredential=` when the source file is not stored encrypted. This works only
+when the program is launched in the systemd service environment.
+
 You can also use `file:/etc/machine-id` as a directive to make the derived
 passphrase machine-specific, so it only works on systems with the same machine
 ID. However, `/etc/machine-id` is readable by all local users, so this alone
