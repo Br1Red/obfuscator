@@ -26,11 +26,11 @@ static size_t prepare_line(char *line, size_t line_length) {
 }
 
 static void write_guard(FILE *out, const char *directive, const char *prefix) {
-    fprintf(out, "#%s __", directive);
+    fprintf(out, "#%s ", directive);
     for (const unsigned char *c = (const unsigned char *)prefix; *c; c++) {
         fputc(isalnum(*c) || *c == '_' ? *c : '_', out);
     }
-    fprintf(out, "_H__\n");
+    fprintf(out, "_H\n");
 }
 
 void write_obfuscated_string(FILE *out, const char *str, size_t len, size_t string_index, const uint32_t key[4]) {
@@ -135,12 +135,13 @@ int main(int argc, char *argv[]) {
     fprintf(out, "// Auto-generated header for obfuscated %s strings\n", input_filename);
     fprintf(out, "// Do not edit manually\n\n");
     fprintf(out, "#include <stdint.h>\n");
-    fprintf(out, "#include <stddef.h>\n\n");
+    fprintf(out, "#include <stddef.h>\n");
+    fprintf(out, "#include <stdbool.h>\n\n");
     fprintf(out, "#define %s_NUM_STRINGS %d\n", output_prefix, num_lines);
     fprintf(out, "#define %s_MAX_LEN %zu\n\n", output_prefix, max_len);
-    fprintf(out, "static inline int %s_string(int number, char buffer[%zu]) {\n", output_prefix_lowercase, max_len);
-    fprintf(out, "    const uint32_t key[4] = {UINT32_C(0x%08" PRIX32 "), UINT32_C(0x%08" PRIX32 "), UINT32_C(0x%08" PRIX32 "), UINT32_C(0x%08" PRIX32 ")};\n", key[0], key[1], key[2], key[3]);
-    fprintf(out, "    const uint8_t strings[%d][%zu] = {\n", num_lines, max_len);
+    fprintf(out, "static inline bool %s_string(size_t number, char buffer[%s_MAX_LEN]) {\n", output_prefix_lowercase, output_prefix);
+    fprintf(out, "    static const volatile uint32_t key[4] = {UINT32_C(0x%08" PRIX32 "), UINT32_C(0x%08" PRIX32 "), UINT32_C(0x%08" PRIX32 "), UINT32_C(0x%08" PRIX32 ")};\n", key[0], key[1], key[2], key[3]);
+    fprintf(out, "    static const uint8_t strings[%s_NUM_STRINGS][%s_MAX_LEN] = {\n", output_prefix, output_prefix);
     int i = 0;
     for (;;) {
         ssize_t line_length = getline(&buffer, &buffer_capacity, in);
@@ -163,23 +164,45 @@ int main(int argc, char *argv[]) {
         i++;
     }
     fprintf(out, "    };\n");
-    fprintf(out, "    if (!buffer) return 0;\n");
-    fprintf(out, "    if (number < 0 || number >= %d) {\n", num_lines);
-    fprintf(out, "        buffer[0]='\\0';\n");
-    fprintf(out, "    } else {\n");
-    fprintf(out, "        for (size_t i = 0; i < %zu; i++) {\n", max_len);
-    fprintf(out, "            uint32_t k = key[(i + (size_t)number) %% 4];\n");
-    fprintf(out, "            uint8_t enc = strings[number][i];\n");
-    fprintf(out, "            enc ^= (uint8_t)(k >> 24);\n");
-    fprintf(out, "            enc = (uint8_t)(enc + (uint8_t)(k >> 16));\n");
-    fprintf(out, "            enc ^= (uint8_t)(k >> 8);\n");
-    fprintf(out, "            char dec = (char)(enc - (uint8_t)k);\n");
-    fprintf(out, "            buffer[i] = dec;\n");
-    fprintf(out, "            if (dec == '\\0') break;\n");
+    fprintf(out, "    if (!buffer || number >= %s_NUM_STRINGS) {\n", output_prefix);
+    fprintf(out, "        if (buffer) buffer[0]='\\0';\n");
+    fprintf(out, "        return false;\n");
+    fprintf(out, "    }\n");
+    fprintf(out, "    for (size_t i = 0; i < %s_MAX_LEN; i++) {\n", output_prefix);
+    fprintf(out, "        uint32_t k = key[(i + number) %% 4];\n");
+    fprintf(out, "        uint8_t val = strings[number][i];\n");
+    fprintf(out, "        val ^= (uint8_t)(k >> 24);\n");
+    fprintf(out, "        val = (uint8_t)(val + (uint8_t)(k >> 16));\n");
+    fprintf(out, "        val ^= (uint8_t)(k >> 8);\n");
+    fprintf(out, "        val = (uint8_t)(val - (uint8_t)k);\n");
+    fprintf(out, "        buffer[i] = (char)val;\n");
+    fprintf(out, "        if (val == 0) {\n");
+    fprintf(out, "            return buffer[0] != '\\0';\n");
     fprintf(out, "        }\n");
     fprintf(out, "    }\n");
-    fprintf(out, "    return !!buffer[0];\n");
+    fprintf(out, "    buffer[%s_MAX_LEN - 1] = '\\0';\n", output_prefix);
+    fprintf(out, "    return buffer[0] != '\\0';\n");
     fprintf(out, "}\n\n");
+    fprintf(out, "static inline const char *%s_get(size_t number, char buffer[%s_MAX_LEN]) {\n", output_prefix_lowercase, output_prefix);
+    fprintf(out, "    %s_string(number, buffer);\n", output_prefix_lowercase);
+    fprintf(out, "    return buffer;\n");
+    fprintf(out, "}\n\n");
+    fprintf(out, "static inline void %s_wipe(void *ptr, size_t len) {\n", output_prefix_lowercase);
+    fprintf(out, "    if (!ptr) return;\n");
+    fprintf(out, "    volatile uint8_t *p = (volatile uint8_t *)ptr;\n");
+    fprintf(out, "    while (len--) *p++ = 0;\n");
+    fprintf(out, "}\n\n");
+    fprintf(out, "#define %s(id) %s_get((id), (char[%s_MAX_LEN]){0})\n", output_prefix, output_prefix_lowercase, output_prefix);
+    fprintf(out, "#define %s_WIPE(buf) %s_wipe((buf), sizeof(buf))\n", output_prefix, output_prefix_lowercase);
+    fprintf(out, "#if defined(__GNUC__) || defined(__clang__)\n");
+    fprintf(out, "static inline void %s_cleanup_cb(char (*buf)[%s_MAX_LEN]) {\n", output_prefix_lowercase, output_prefix);
+    fprintf(out, "    if (buf) %s_wipe(*buf, sizeof(*buf));\n", output_prefix_lowercase);
+    fprintf(out, "}\n");
+    fprintf(out, "#define %s_AUTO_BUF(var_name) char var_name[%s_MAX_LEN] __attribute__((cleanup(%s_cleanup_cb))) = {0}\n", output_prefix, output_prefix, output_prefix_lowercase);
+    fprintf(out, "#else\n");
+    fprintf(out, "#define %s_AUTO_BUF(var_name) char var_name[%s_MAX_LEN] = {0}\n", output_prefix, output_prefix);
+    fprintf(out, "#endif\n");
+    fprintf(out, "#define %s_SCOPED(var_name, id) %s_AUTO_BUF(var_name); (void)%s_string((id), var_name)\n\n", output_prefix, output_prefix, output_prefix_lowercase);
     fprintf(out, "#endif\n");
     if (fclose(in) != 0) {
         perror("fclose(input)");

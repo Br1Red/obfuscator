@@ -3,6 +3,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <pthread.h>
+#include <stdbool.h>
 #include <openssl/bio.h>
 #include <openssl/evp.h>
 #include <openssl/rand.h>
@@ -435,24 +437,30 @@ static char *expand_environment_variables(const char *path) {
 }
 
 static int append_file(char *passphrase, const char *path) {
+    char line[128] = {0};
     if (!*path) {
         fprintf(stderr, "OBFUSCATOR: percorso file vuoto\n");
+        OPENSSL_cleanse(line, sizeof(line));
         return 0;
     }
     char *expanded_path = expand_environment_variables(path);
-    if (!expanded_path) return 0;
+    if (!expanded_path) {
+        OPENSSL_cleanse(line, sizeof(line));
+        return 0;
+    }
     if (!*expanded_path) {
         fprintf(stderr, "OBFUSCATOR: percorso file vuoto\n");
         free(expanded_path);
+        OPENSSL_cleanse(line, sizeof(line));
         return 0;
     }
     FILE *file = fopen(expanded_path, "r");
     if (!file) {
         perror("OBFUSCATOR: apertura del file fallita");
         free(expanded_path);
+        OPENSSL_cleanse(line, sizeof(line));
         return 0;
     }
-    char line[128];
     while (fgets(line, sizeof(line), file)) {
         size_t length = strnlen(line, sizeof(line));
         while (length > 0 && (line[length - 1] == '\r' || line[length - 1] == '\n')) {
@@ -461,6 +469,7 @@ static int append_file(char *passphrase, const char *path) {
         if (!append_str(passphrase, line)) {
             fclose(file);
             free(expanded_path);
+            OPENSSL_cleanse(line, sizeof(line));
             return 0;
         }
     }
@@ -468,10 +477,12 @@ static int append_file(char *passphrase, const char *path) {
         perror("OBFUSCATOR: lettura del file fallita");
         fclose(file);
         free(expanded_path);
+        OPENSSL_cleanse(line, sizeof(line));
         return 0;
     }
     fclose(file);
     free(expanded_path);
+    OPENSSL_cleanse(line, sizeof(line));
     return 1;
 }
 
@@ -479,39 +490,52 @@ static int get_passphrase(char passphrase[PASSPHRASE_MAX_LEN]) {
     if (!passphrase) return 0;
     passphrase[0] = '\0';
 #ifdef OBFUSCATOR_CACHE_PASSPHRASE
-    static char cached_passphrase[PASSPHRASE_MAX_LEN] = "";
-    if (!cached_passphrase[0]) {
-        char *ptr=cached_passphrase;
-#else
-        char *ptr=passphrase;
-#endif
-        char entry[OBFUSCATOR_SECRETS_MAX_LEN];
-        for (int i=0;; ) {
-            if (!obfuscator_secrets_string(i++, entry)) break;
-            int ok;
-            if (strncmp(entry, "file:", 5) == 0) {
-                ok = append_file(ptr, entry + 5);
-            } else if (strncmp(entry, "str:", 4) == 0) {
-                ok = append_str(ptr, entry + 4);
-            } else {
-                fprintf(stderr, "OBFUSCATOR: direttiva non riconosciuta\n");
-                ok = 0;
-            }
-            if (!ok) {
-                OPENSSL_cleanse(ptr, PASSPHRASE_MAX_LEN);
-                return 0;
-            }
-        }
-        if (!ptr[0]) {
-            fprintf(stderr, "OBFUSCATOR: la passphrase è vuota\n");
-            OPENSSL_cleanse(ptr, PASSPHRASE_MAX_LEN);
-            return 0;
-        }
-#ifdef OBFUSCATOR_CACHE_PASSPHRASE
+    static pthread_mutex_t cache_mutex = PTHREAD_MUTEX_INITIALIZER;
+    static char cached_passphrase[PASSPHRASE_MAX_LEN] = {0};
+    static bool is_cached = false;
+    if (pthread_mutex_lock(&cache_mutex) != 0) {
+        perror("OBFUSCATOR: lock del mutex fallito");
+        return 0;
     }
-    memcpy(passphrase, cached_passphrase, PASSPHRASE_MAX_LEN);
+    if (is_cached) {
+        memcpy(passphrase, cached_passphrase, PASSPHRASE_MAX_LEN);
+        pthread_mutex_unlock(&cache_mutex);
+        return 1;
+    }
 #endif
-    return 1;
+    char tmp_pass[PASSPHRASE_MAX_LEN] = {0};
+    OBFUSCATOR_SECRETS_AUTO_BUF(entry);
+    int status = 0;
+    for (size_t i = 0; obfuscator_secrets_string(i, entry); i++) {
+        int ok;
+        if (strncmp(entry, "file:", 5) == 0) {
+            ok = append_file(tmp_pass, entry + 5);
+        } else if (strncmp(entry, "str:", 4) == 0) {
+            ok = append_str(tmp_pass, entry + 4);
+        } else {
+            fprintf(stderr, "OBFUSCATOR: direttiva non riconosciuta\n");
+            ok = 0;
+        }
+        if (!ok) {
+            goto cleanup;
+        }
+    }
+    if (!tmp_pass[0]) {
+        fprintf(stderr, "OBFUSCATOR: la passphrase è vuota\n");
+        goto cleanup;
+    }
+#ifdef OBFUSCATOR_CACHE_PASSPHRASE
+    memcpy(cached_passphrase, tmp_pass, PASSPHRASE_MAX_LEN);
+    is_cached = true;
+#endif
+    memcpy(passphrase, tmp_pass, PASSPHRASE_MAX_LEN);
+    status = 1;
+cleanup:
+    OPENSSL_cleanse(tmp_pass, sizeof(tmp_pass));
+#ifdef OBFUSCATOR_CACHE_PASSPHRASE
+    pthread_mutex_unlock(&cache_mutex);
+#endif
+    return status;
 }
 
 static int derive_key(const unsigned char *salt, unsigned char key[KEY_LEN]) {

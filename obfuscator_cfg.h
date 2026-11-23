@@ -1,5 +1,5 @@
-#ifndef __OBFUSCATOR_CFG_H__
-#define __OBFUSCATOR_CFG_H__
+#ifndef OBFUSCATOR_CFG_H
+#define OBFUSCATOR_CFG_H
 
 // Maximum length of the passphrase.
 #define PASSPHRASE_MAX_LEN 256

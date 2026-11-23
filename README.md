@@ -68,7 +68,7 @@ For a service managed by systemd, you can instead supply the key as a systemd
 credential. Add this directive to `obfuscator_secrets.txt`:
 
 ```text
-file:$CREDENTIALS_DIRECTORY/obfuscator_key.txt
+file:$CREDENTIALS_DIRECTORY/obfuscator_key
 ```
 
 Then configure the service to provide a credential with that name. For example,
@@ -76,7 +76,7 @@ to have systemd decrypt a credential from its encrypted credential store:
 
 ```ini
 [Service]
-LoadCredentialEncrypted=obfuscator_key.txt:/etc/credstore.encrypted/obfuscator_key
+LoadCredentialEncrypted=obfuscator_key:/etc/credstore.encrypted/obfuscator_key
 ```
 
 Systemd makes the credential available to the service in its credentials
@@ -170,6 +170,34 @@ make hide_strings
 ```
 
 For `messages.txt`, this creates `messages.h`, with an inline
-`messages_string(int number)` accessor. Blank lines and lines beginning with
-`#` or `//` are skipped. This is lightweight string obfuscation, not
-encryption: the generated header contains the data and the decoding routine.
+`messages_string(size_t number, char buffer[MESSAGES_MAX_LEN])` accessor that
+decodes a string into the caller-provided buffer and returns `true` on success.
+The header also defines `MESSAGES_NUM_STRINGS` and `MESSAGES_MAX_LEN`.
+
+```c
+#include <stdio.h>
+#include "messages.h"
+
+int main(void) {
+    MESSAGES_AUTO_BUF(message);
+    if (!messages_string(0, message)) {
+        return 1;
+    }
+    puts(message);
+    return 0;
+}
+```
+
+`MESSAGES_AUTO_BUF(name)` declares a `MESSAGES_MAX_LEN` buffer and, with GCC or
+Clang, wipes it automatically when it leaves scope. On other compilers it only
+declares a zero-initialized buffer; use `MESSAGES_WIPE(name)` to wipe it
+explicitly. `MESSAGES_WIPE` expects an array, not a pointer. The convenience
+macro `MESSAGES(id)` returns a pointer to a temporary buffer for immediate use;
+use `messages_string()` with your own buffer when you need to check for an
+invalid index or control the buffer's lifetime. `MESSAGES_SCOPED(name, id)` is
+a shorthand that declares an auto-wiped buffer and decodes the selected string,
+but does not report whether the index was valid.
+
+Blank lines and lines beginning with `#` or `//` are skipped. This is
+lightweight string obfuscation, not encryption: the generated header contains
+the data and decoding routine.

@@ -1,5 +1,5 @@
-#ifndef __OBFUSCATOR_H__
-#define __OBFUSCATOR_H__
+#ifndef OBFUSCATOR_H
+#define OBFUSCATOR_H
 
 #include <stddef.h>
 
