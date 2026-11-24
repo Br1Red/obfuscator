@@ -16,7 +16,9 @@ header containing reversibly obfuscated strings.
 The feature and key-cache defines are in `obfuscator_cfg.h`. By default,
 `OBFUSCATOR_USE_ARGON2` enables Argon2id key derivation and
 `OBFUSCATOR_CACHE_MASTER_KEY` keeps the derived master key in memory for reuse
-during the process lifetime.
+during the process lifetime. Concurrent initial requests may assemble the
+passphrase and derive the master key independently; the first key published to
+the cache is used by all successful requests.
 Change these defines in that header to adjust the configuration. The
 key-derivation parameters can also be tuned
 there: `ARGON2_TIME_COST`, `ARGON2_MEMORY_COST_KIB`, and

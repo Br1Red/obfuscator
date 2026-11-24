@@ -1,15 +1,15 @@
 #define _GNU_SOURCE
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <stdint.h>
-#include <limits.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <stdio.h>
+#include <limits.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
 #include <pthread.h>
 #include <stdbool.h>
 #include <sys/mman.h>
-#include <unistd.h>
 #include <openssl/bio.h>
 #include <openssl/evp.h>
 #include <openssl/kdf.h>
@@ -320,14 +320,12 @@ int libobfuscator_main(int argc, char *argv[]) {
 }
 
 static void *alloc_locked_buffer(size_t length) {
-    void *buffer = mmap(NULL, length, PROT_READ | PROT_WRITE,
-                        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    void *buffer = mmap(NULL, length, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (buffer == MAP_FAILED) {
         perror("OBFUSCATOR: allocazione del buffer protetto fallita");
         return NULL;
     }
-    if (madvise(buffer, length, MADV_WIPEONFORK) != 0 ||
-        mlock(buffer, length) != 0) {
+    if (madvise(buffer, length, MADV_WIPEONFORK) != 0 || mlock(buffer, length) != 0) {
         perror("OBFUSCATOR: protezione del buffer fallita");
         if (munmap(buffer, length) != 0) {
             perror("OBFUSCATOR: rilascio del buffer protetto fallito");
@@ -375,8 +373,12 @@ static int append_bytes(unsigned char **passphrase, size_t *passphrase_length, s
     return 1;
 }
 
-static int append_str(unsigned char **passphrase, size_t *passphrase_length, size_t *passphrase_capacity, const char *str) {
-    size_t length = strlen(str);
+static int append_str(unsigned char **passphrase, size_t *passphrase_length, size_t *passphrase_capacity, const char *str, size_t str_capacity) {
+    size_t length = strnlen(str, str_capacity);
+    if (length == str_capacity) {
+        fprintf(stderr, "OBFUSCATOR: direttiva stringa non valida\n");
+        return 0;
+    }
     return append_bytes(passphrase, passphrase_length, passphrase_capacity, str, length);
 }
 
@@ -625,10 +627,18 @@ static int get_master_key(unsigned char master_key[KEY_LEN]) {
         master_key_cache_pid = getpid();
     }
     if (master_key_is_cached) {
+        if (!cached_master_key) {
+            fprintf(stderr, "OBFUSCATOR: cache della chiave master non valida\n");
+            goto cleanup;
+        }
         memcpy(master_key, cached_master_key, KEY_LEN);
         status = 0;
+        pthread_mutex_unlock(&master_key_cache_mutex);
+        cache_locked = false;
         goto cleanup;
     }
+    pthread_mutex_unlock(&master_key_cache_mutex);
+    cache_locked = false;
 #endif
     entry = alloc_locked_buffer(entry_capacity);
     if (!entry) goto cleanup;
@@ -639,7 +649,7 @@ static int get_master_key(unsigned char master_key[KEY_LEN]) {
         } else if (strncmp(entry, "cred:", 5) == 0) {
             ok = append_credential(&passphrase, &passphrase_length, &passphrase_capacity, entry + 5);
         } else if (strncmp(entry, "str:", 4) == 0) {
-            ok = append_str(&passphrase, &passphrase_length, &passphrase_capacity, entry + 4);
+            ok = append_str(&passphrase, &passphrase_length, &passphrase_capacity, entry + 4, entry_capacity - 4);
         } else {
             fprintf(stderr, "OBFUSCATOR: direttiva non riconosciuta\n");
             ok = 0;
@@ -666,13 +676,28 @@ static int get_master_key(unsigned char master_key[KEY_LEN]) {
     }
 #endif
 #ifdef OBFUSCATOR_CACHE_MASTER_KEY
-    if (!cached_master_key) {
-        cached_master_key = alloc_locked_buffer(KEY_LEN);
-        if (!cached_master_key) goto cleanup;
-        master_key_cache_pid = getpid();
+    if (pthread_mutex_lock(&master_key_cache_mutex) != 0) {
+        perror("OBFUSCATOR: lock del mutex fallito");
+        goto cleanup;
     }
-    memcpy(cached_master_key, master_key, KEY_LEN);
-    master_key_is_cached = true;
+    cache_locked = true;
+    if (master_key_is_cached) {
+        if (!cached_master_key) {
+            fprintf(stderr, "OBFUSCATOR: cache della chiave master non valida\n");
+            goto cleanup;
+        }
+        memcpy(master_key, cached_master_key, KEY_LEN);
+    } else {
+        if (!cached_master_key) {
+            cached_master_key = alloc_locked_buffer(KEY_LEN);
+            if (!cached_master_key) goto cleanup;
+            master_key_cache_pid = getpid();
+        }
+        memcpy(cached_master_key, master_key, KEY_LEN);
+        master_key_is_cached = true;
+    }
+    pthread_mutex_unlock(&master_key_cache_mutex);
+    cache_locked = false;
 #endif
     status = 0;
 cleanup:
