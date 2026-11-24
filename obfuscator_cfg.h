@@ -1,9 +1,6 @@
 #ifndef OBFUSCATOR_CFG_H
 #define OBFUSCATOR_CFG_H
 
-// Maximum length of the passphrase.
-#define PASSPHRASE_MAX_LEN 4096
-
 // If OBFUSCATOR_CACHE_MASTER_KEY is defined, the derived master key is cached in memory.
 #define OBFUSCATOR_CACHE_MASTER_KEY
 

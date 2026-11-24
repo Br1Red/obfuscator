@@ -54,8 +54,9 @@ cred:obfuscator_key
 stored. File paths are resolved relative to the process's current
 working directory and support `$NAME` and `${NAME}` environment-variable
 references. An unset variable or malformed braced reference is an error;
-paths are not evaluated by a shell. The combined passphrase must be non-empty
-and shorter than 256 bytes. `cred:<key>` appends the bytes of
+paths are not evaluated by a shell. The combined passphrase must be non-empty;
+it is assembled in a dynamically sized buffer, subject to available memory and
+the selected KDF's input limits. `cred:<key>` appends the bytes of
 `$CREDENTIALS_DIRECTORY/<key>` with the same binary handling; `<key>` must be a
 single file name, and the directive fails if `CREDENTIALS_DIRECTORY` is not
 set.
@@ -205,6 +206,7 @@ invalid index or control the buffer's lifetime. `MESSAGES_SCOPED(name, id)` is
 a shorthand that declares an auto-wiped buffer and decodes the selected string,
 but does not report whether the index was valid.
 
-Blank lines and lines beginning with `#` or `//` are skipped. This is
-lightweight string obfuscation, not encryption: the generated header contains
-the data and decoding routine.
+Blank lines and lines beginning with `#` or `//` are skipped. If no valid lines
+remain, the generated header has zero strings and its accessor always returns
+`false`. This is lightweight string obfuscation, not encryption: the generated
+header contains the data and decoding routine.

@@ -113,10 +113,7 @@ int main(int argc, char *argv[]) {
         perror("fseek()");
         goto err;
     }
-    if (max_len == 0) {
-        fprintf(stderr,"No valid lines found in input file\n");
-        goto err;
-    }
+    if (max_len == 0) max_len = 1;
     char output_filename[1024];
     snprintf(output_filename, sizeof(output_filename), "%s.h", output_prefix_lowercase);
     out = fopen(output_filename, "w");
@@ -125,7 +122,7 @@ int main(int argc, char *argv[]) {
         goto err;
     }
     uint32_t key[4];
-    if (RAND_bytes((unsigned char *)key, sizeof(key)) != 1) {
+    if (num_lines > 0 && RAND_bytes((unsigned char *)key, sizeof(key)) != 1) {
         fprintf(stderr, "RAND_bytes() failed\n");
         goto err;
     }
@@ -140,48 +137,54 @@ int main(int argc, char *argv[]) {
     fprintf(out, "#define %s_NUM_STRINGS %d\n", output_prefix, num_lines);
     fprintf(out, "#define %s_MAX_LEN %zu\n\n", output_prefix, max_len);
     fprintf(out, "static inline bool %s_string(size_t number, char buffer[%s_MAX_LEN]) {\n", output_prefix_lowercase, output_prefix);
-    fprintf(out, "    static const volatile uint32_t key[4] = {UINT32_C(0x%08" PRIX32 "), UINT32_C(0x%08" PRIX32 "), UINT32_C(0x%08" PRIX32 "), UINT32_C(0x%08" PRIX32 ")};\n", key[0], key[1], key[2], key[3]);
-    fprintf(out, "    static const uint8_t strings[%s_NUM_STRINGS][%s_MAX_LEN] = {\n", output_prefix, output_prefix);
-    int i = 0;
-    for (;;) {
-        ssize_t line_length = getline(&buffer, &buffer_capacity, in);
-        if (line_length == -1) {
-            int read_errno = errno;
-            if (ferror(in)) {
-                errno = read_errno;
-                perror("getline()");
-                goto err;
+    if (num_lines == 0) {
+        fprintf(out, "    (void)number;\n");
+        fprintf(out, "    if (buffer) buffer[0] = '\\0';\n");
+        fprintf(out, "    return false;\n");
+    } else {
+        fprintf(out, "    static const volatile uint32_t key[4] = {UINT32_C(0x%08" PRIX32 "), UINT32_C(0x%08" PRIX32 "), UINT32_C(0x%08" PRIX32 "), UINT32_C(0x%08" PRIX32 ")};\n", key[0], key[1], key[2], key[3]);
+        fprintf(out, "    static const uint8_t strings[%s_NUM_STRINGS][%s_MAX_LEN] = {\n", output_prefix, output_prefix);
+        int i = 0;
+        for (;;) {
+            ssize_t line_length = getline(&buffer, &buffer_capacity, in);
+            if (line_length == -1) {
+                int read_errno = errno;
+                if (ferror(in)) {
+                    errno = read_errno;
+                    perror("getline()");
+                    goto err;
+                }
+                break;
             }
-            break;
+            size_t len = prepare_line(buffer, (size_t)line_length);
+            if (len == 0) continue;
+            write_obfuscated_string(out, buffer, len, (size_t)i, key);
+            if (i < num_lines - 1) {
+                fputc(',', out);
+            }
+            fputc('\n', out);
+            i++;
         }
-        size_t len = prepare_line(buffer, (size_t)line_length);
-        if (len == 0) continue;
-        write_obfuscated_string(out, buffer, len, (size_t)i, key);
-        if (i < num_lines - 1) {
-            fputc(',', out);
-        }
-        fputc('\n', out);
-        i++;
+        fprintf(out, "    };\n");
+        fprintf(out, "    if (!buffer || number >= %s_NUM_STRINGS) {\n", output_prefix);
+        fprintf(out, "        if (buffer) buffer[0]='\\0';\n");
+        fprintf(out, "        return false;\n");
+        fprintf(out, "    }\n");
+        fprintf(out, "    for (size_t i = 0; i < %s_MAX_LEN; i++) {\n", output_prefix);
+        fprintf(out, "        uint32_t k = key[(i + number) %% 4];\n");
+        fprintf(out, "        uint8_t val = strings[number][i];\n");
+        fprintf(out, "        val ^= (uint8_t)(k >> 24);\n");
+        fprintf(out, "        val = (uint8_t)(val + (uint8_t)(k >> 16));\n");
+        fprintf(out, "        val ^= (uint8_t)(k >> 8);\n");
+        fprintf(out, "        val = (uint8_t)(val - (uint8_t)k);\n");
+        fprintf(out, "        buffer[i] = (char)val;\n");
+        fprintf(out, "        if (val == 0) {\n");
+        fprintf(out, "            return buffer[0] != '\\0';\n");
+        fprintf(out, "        }\n");
+        fprintf(out, "    }\n");
+        fprintf(out, "    buffer[%s_MAX_LEN - 1] = '\\0';\n", output_prefix);
+        fprintf(out, "    return buffer[0] != '\\0';\n");
     }
-    fprintf(out, "    };\n");
-    fprintf(out, "    if (!buffer || number >= %s_NUM_STRINGS) {\n", output_prefix);
-    fprintf(out, "        if (buffer) buffer[0]='\\0';\n");
-    fprintf(out, "        return false;\n");
-    fprintf(out, "    }\n");
-    fprintf(out, "    for (size_t i = 0; i < %s_MAX_LEN; i++) {\n", output_prefix);
-    fprintf(out, "        uint32_t k = key[(i + number) %% 4];\n");
-    fprintf(out, "        uint8_t val = strings[number][i];\n");
-    fprintf(out, "        val ^= (uint8_t)(k >> 24);\n");
-    fprintf(out, "        val = (uint8_t)(val + (uint8_t)(k >> 16));\n");
-    fprintf(out, "        val ^= (uint8_t)(k >> 8);\n");
-    fprintf(out, "        val = (uint8_t)(val - (uint8_t)k);\n");
-    fprintf(out, "        buffer[i] = (char)val;\n");
-    fprintf(out, "        if (val == 0) {\n");
-    fprintf(out, "            return buffer[0] != '\\0';\n");
-    fprintf(out, "        }\n");
-    fprintf(out, "    }\n");
-    fprintf(out, "    buffer[%s_MAX_LEN - 1] = '\\0';\n", output_prefix);
-    fprintf(out, "    return buffer[0] != '\\0';\n");
     fprintf(out, "}\n\n");
     fprintf(out, "static inline const char *%s_get(size_t number, char buffer[%s_MAX_LEN]) {\n", output_prefix_lowercase, output_prefix);
     fprintf(out, "    %s_string(number, buffer);\n", output_prefix_lowercase);
