@@ -15,15 +15,14 @@ header containing reversibly obfuscated strings.
 The feature and key-cache defines are in `obfuscator_cfg.h`. By default,
 `OBFUSCATOR_USE_ARGON2` enables Argon2id key derivation and
 `OBFUSCATOR_CACHE_MASTER_KEY` keeps the derived master key in memory for reuse
-during the process lifetime, rather than caching the assembled passphrase.
+during the process lifetime.
 Change these defines in that header to adjust the configuration. The
 key-derivation parameters can also be tuned
 there: `ARGON2_TIME_COST`, `ARGON2_MEMORY_COST_KIB`, and
 `ARGON2_PARALLELISM` for Argon2id, or `PBKDF2_ITERATIONS` for PBKDF2. The
 selected KDF uses a fixed application-specific salt to produce the master
 key. HKDF-SHA256 uses each ciphertext's random salt to derive its AES-256-GCM
-key. Keep the same KDF and parameters when decrypting ciphertexts. Ciphertexts
-created with the previous per-ciphertext KDF key schedule are not compatible.
+key. Keep the same KDF and parameters when decrypting ciphertexts.
 
 ## Build
 
@@ -31,8 +30,8 @@ created with the previous per-ciphertext KDF key schedule are not compatible.
 make
 ```
 
-This builds `libobfuscator.so` and generates `obfuscator_secrets.h` from
-`obfuscator_secrets.txt` using the `hide_strings` helper. To build just the
+This generates `obfuscator_secrets.h` from `obfuscator_secrets.txt` using the
+`hide_strings` helper and builds `libobfuscator.so`. To build just the
 helper, run `make hide_strings`. To remove generated build products, including
 the generated secrets header, run `make clean`.
 
@@ -54,12 +53,11 @@ cred:obfuscator_key
 stored. File paths are resolved relative to the process's current
 working directory and support `$NAME` and `${NAME}` environment-variable
 references. An unset variable or malformed braced reference is an error;
-paths are not evaluated by a shell. The combined passphrase must be non-empty;
-it is assembled in a dynamically sized buffer, subject to available memory and
-the selected KDF's input limits. `cred:<key>` appends the bytes of
+paths are not evaluated by a shell. `cred:<key>` appends the bytes of
 `$CREDENTIALS_DIRECTORY/<key>` with the same binary handling; `<key>` must be a
 single file name, and the directive fails if `CREDENTIALS_DIRECTORY` is not
-set.
+set. The combined passphrase is assembled in a dynamically sized buffer, subject
+to available memory and the selected KDF's input limits.
 
 To create a random key file for use with the `file:` directive, run this from
 the directory where you want the file to be created:
@@ -115,7 +113,7 @@ printf 'BASE64_CIPHERTEXT\n' | ./libobfuscator.so -d
 The `-k` option prints a randomly generated 256-bit value in hexadecimal. You
 can redirect it to a file and reference that file with `file:` in
 `obfuscator_secrets.txt`; the configured passphrase is used to derive the
-encryption key.
+master key.
 
 Each encrypted value is Base64-encoded and contains a random salt, nonce,
 ciphertext, and authentication tag. As a result, encrypting the same input
@@ -170,7 +168,9 @@ removing that linker flag from the Makefile.
 
 ## Obfuscating strings for C
 
-`hide_strings` converts a text file into a generated header:
+`hide_strings` converts a text file into a generated header;
+this is lightweight string obfuscation, not encryption: the generated
+header contains the data and decoding routine.
 
 ```sh
 make hide_strings
@@ -180,7 +180,9 @@ make hide_strings
 For `messages.txt`, this creates `messages.h`, with an inline
 `messages_string(size_t number, char buffer[MESSAGES_MAX_LEN])` accessor that
 decodes a string into the caller-provided buffer and returns `true` on success.
-The header also defines `MESSAGES_NUM_STRINGS` and `MESSAGES_MAX_LEN`.
+Blank lines and lines beginning with `#` or `//` are skipped. If no valid lines
+remain, the generated header has zero strings and its accessor always returns
+`false`.
 
 ```c
 #include <stdio.h>
@@ -196,17 +198,13 @@ int main(void) {
 }
 ```
 
-`MESSAGES_AUTO_BUF(name)` declares a `MESSAGES_MAX_LEN` buffer and, with GCC or
-Clang, wipes it automatically when it leaves scope. On other compilers it only
-declares a zero-initialized buffer; use `MESSAGES_WIPE(name)` to wipe it
-explicitly. `MESSAGES_WIPE` expects an array, not a pointer. The convenience
-macro `MESSAGES(id)` returns a pointer to a temporary buffer for immediate use;
+The header also defines `MESSAGES_NUM_STRINGS` and `MESSAGES_MAX_LEN`.
+The convenience macro `MESSAGES(id)` returns a pointer to a temporary buffer for
+immediate use; `MESSAGES_AUTO_BUF(name)` declares a `MESSAGES_MAX_LEN` buffer and,
+with GCC or Clang, wipes it automatically when it leaves scope. On other compilers
+it only declares a zero-initialized buffer; use `MESSAGES_WIPE(name)` to wipe it
+explicitly. `MESSAGES_WIPE` expects an array, not a pointer.
 use `messages_string()` with your own buffer when you need to check for an
 invalid index or control the buffer's lifetime. `MESSAGES_SCOPED(name, id)` is
 a shorthand that declares an auto-wiped buffer and decodes the selected string,
 but does not report whether the index was valid.
-
-Blank lines and lines beginning with `#` or `//` are skipped. If no valid lines
-remain, the generated header has zero strings and its accessor always returns
-`false`. This is lightweight string obfuscation, not encryption: the generated
-header contains the data and decoding routine.
