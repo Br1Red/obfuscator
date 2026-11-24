@@ -3,10 +3,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <limits.h>
 #include <pthread.h>
 #include <stdbool.h>
 #include <openssl/bio.h>
 #include <openssl/evp.h>
+#include <openssl/kdf.h>
 #include <openssl/rand.h>
 #include <openssl/buffer.h>
 #include <openssl/crypto.h>
@@ -313,16 +315,19 @@ int libobfuscator_main(int argc, char *argv[]) {
     return result;
 }
 
-static int append_str(char *passphrase, const char *str) {
-    size_t length = strnlen(str, PASSPHRASE_MAX_LEN);
-    size_t current_length = strnlen(passphrase, PASSPHRASE_MAX_LEN);
-    if (current_length + length >= PASSPHRASE_MAX_LEN) {
+static int append_bytes(char *passphrase, size_t *passphrase_length, const void *data, size_t length) {
+    if (length > PASSPHRASE_MAX_LEN - *passphrase_length) {
         fprintf(stderr, "OBFUSCATOR: contenuto della passphrase troppo lungo o non valido\n");
         return 0;
     }
-    memcpy(passphrase + current_length, str, length);
-    passphrase[current_length + length] = '\0';
+    memcpy(passphrase + *passphrase_length, data, length);
+    *passphrase_length += length;
     return 1;
+}
+
+static int append_str(char *passphrase, size_t *passphrase_length, const char *str) {
+    size_t length = strlen(str);
+    return append_bytes(passphrase, passphrase_length, str, length);
 }
 
 static int append_path_text(char **output, size_t *length, size_t *capacity, const char *text, size_t text_length) {
@@ -436,82 +441,127 @@ static char *expand_environment_variables(const char *path) {
     return expanded_path;
 }
 
-static int append_file(char *passphrase, const char *path) {
-    char line[128] = {0};
+static int append_expanded_file(char *passphrase, size_t *passphrase_length, const char *path) {
+    unsigned char buffer[128] = {0};
     if (!*path) {
         fprintf(stderr, "OBFUSCATOR: percorso file vuoto\n");
-        OPENSSL_cleanse(line, sizeof(line));
+        OPENSSL_cleanse(buffer, sizeof(buffer));
         return 0;
     }
-    char *expanded_path = expand_environment_variables(path);
-    if (!expanded_path) {
-        OPENSSL_cleanse(line, sizeof(line));
-        return 0;
-    }
-    if (!*expanded_path) {
-        fprintf(stderr, "OBFUSCATOR: percorso file vuoto\n");
-        free(expanded_path);
-        OPENSSL_cleanse(line, sizeof(line));
-        return 0;
-    }
-    FILE *file = fopen(expanded_path, "r");
+    FILE *file = fopen(path, "rb");
     if (!file) {
         perror("OBFUSCATOR: apertura del file fallita");
-        free(expanded_path);
-        OPENSSL_cleanse(line, sizeof(line));
+        OPENSSL_cleanse(buffer, sizeof(buffer));
         return 0;
     }
-    while (fgets(line, sizeof(line), file)) {
-        size_t length = strnlen(line, sizeof(line));
-        while (length > 0 && (line[length - 1] == '\r' || line[length - 1] == '\n')) {
-            line[--length] = '\0';
-        }
-        if (!append_str(passphrase, line)) {
+    size_t length;
+    while ((length = fread(buffer, 1, sizeof(buffer), file)) > 0) {
+        if (!append_bytes(passphrase, passphrase_length, buffer, length)) {
             fclose(file);
-            free(expanded_path);
-            OPENSSL_cleanse(line, sizeof(line));
+            OPENSSL_cleanse(buffer, sizeof(buffer));
             return 0;
         }
     }
     if (ferror(file)) {
         perror("OBFUSCATOR: lettura del file fallita");
         fclose(file);
-        free(expanded_path);
-        OPENSSL_cleanse(line, sizeof(line));
+        OPENSSL_cleanse(buffer, sizeof(buffer));
         return 0;
     }
     fclose(file);
-    free(expanded_path);
-    OPENSSL_cleanse(line, sizeof(line));
+    OPENSSL_cleanse(buffer, sizeof(buffer));
     return 1;
 }
 
-static int get_passphrase(char passphrase[PASSPHRASE_MAX_LEN]) {
-    if (!passphrase) return 0;
-    passphrase[0] = '\0';
-#ifdef OBFUSCATOR_CACHE_PASSPHRASE
+static int append_file(char *passphrase, size_t *passphrase_length, const char *path) {
+    if (!*path) {
+        fprintf(stderr, "OBFUSCATOR: percorso file vuoto\n");
+        return 0;
+    }
+    char *expanded_path = expand_environment_variables(path);
+    if (!expanded_path) return 0;
+    int result = append_expanded_file(passphrase, passphrase_length, expanded_path);
+    free(expanded_path);
+    return result;
+}
+
+static int append_credential(char *passphrase, size_t *passphrase_length, const char *key) {
+    if (!*key || strchr(key, '/') || strcmp(key, ".") == 0 || strcmp(key, "..") == 0) {
+        fprintf(stderr, "OBFUSCATOR: identificatore credenziale non valido\n");
+        return 0;
+    }
+    const char *directory = getenv("CREDENTIALS_DIRECTORY");
+    if (!directory || !*directory) {
+        fprintf(stderr, "OBFUSCATOR: CREDENTIALS_DIRECTORY non definita\n");
+        return 0;
+    }
+    size_t key_length = strnlen(key, OBFUSCATOR_SECRETS_MAX_LEN - 5);
+    if (key_length == OBFUSCATOR_SECRETS_MAX_LEN - 5) {
+        fprintf(stderr, "OBFUSCATOR: identificatore credenziale non valido\n");
+        return 0;
+    }
+    size_t directory_length = strnlen(directory, PATH_MAX);
+    if (directory_length == PATH_MAX) {
+        fprintf(stderr, "OBFUSCATOR: percorso credenziale troppo lungo\n");
+        return 0;
+    }
+    size_t separator_length = directory[directory_length - 1] == '/' ? 0 : 1;
+    if (key_length > SIZE_MAX - directory_length ||
+        directory_length + key_length > SIZE_MAX - separator_length - 1) {
+        fprintf(stderr, "OBFUSCATOR: percorso credenziale troppo lungo\n");
+        return 0;
+    }
+    size_t path_length = directory_length + separator_length + key_length;
+    if (path_length >= PATH_MAX) {
+        fprintf(stderr, "OBFUSCATOR: percorso credenziale troppo lungo\n");
+        return 0;
+    }
+    char *path = malloc(path_length + 1);
+    if (!path) {
+        perror("OBFUSCATOR: allocazione del percorso credenziale fallita");
+        return 0;
+    }
+    memcpy(path, directory, directory_length);
+    size_t offset = directory_length;
+    if (separator_length) path[offset++] = '/';
+    memcpy(path + offset, key, key_length);
+    path[path_length] = '\0';
+    int result = append_expanded_file(passphrase, passphrase_length, path);
+    free(path);
+    return result;
+}
+
+static int get_master_key(unsigned char master_key[KEY_LEN]) {
+    static const unsigned char master_key_salt[] = "obfuscator master key v1";
+    char passphrase[PASSPHRASE_MAX_LEN] = {0};
+    size_t passphrase_length = 0;
+    int status = -1;
+    int kdf_result;
+    OBFUSCATOR_SECRETS_AUTO_BUF(entry);
+#ifdef OBFUSCATOR_CACHE_MASTER_KEY
+    bool cache_locked = false;
     static pthread_mutex_t cache_mutex = PTHREAD_MUTEX_INITIALIZER;
-    static char cached_passphrase[PASSPHRASE_MAX_LEN] = {0};
+    static unsigned char cached_master_key[KEY_LEN] = {0};
     static bool is_cached = false;
     if (pthread_mutex_lock(&cache_mutex) != 0) {
         perror("OBFUSCATOR: lock del mutex fallito");
+        return -1;
+    }
+    cache_locked = true;
+    if (is_cached) {
+        memcpy(master_key, cached_master_key, KEY_LEN);
+        pthread_mutex_unlock(&cache_mutex);
         return 0;
     }
-    if (is_cached) {
-        memcpy(passphrase, cached_passphrase, PASSPHRASE_MAX_LEN);
-        pthread_mutex_unlock(&cache_mutex);
-        return 1;
-    }
 #endif
-    char tmp_pass[PASSPHRASE_MAX_LEN] = {0};
-    OBFUSCATOR_SECRETS_AUTO_BUF(entry);
-    int status = 0;
     for (size_t i = 0; obfuscator_secrets_string(i, entry); i++) {
         int ok;
         if (strncmp(entry, "file:", 5) == 0) {
-            ok = append_file(tmp_pass, entry + 5);
+            ok = append_file(passphrase, &passphrase_length, entry + 5);
+        } else if (strncmp(entry, "cred:", 5) == 0) {
+            ok = append_credential(passphrase, &passphrase_length, entry + 5);
         } else if (strncmp(entry, "str:", 4) == 0) {
-            ok = append_str(tmp_pass, entry + 4);
+            ok = append_str(passphrase, &passphrase_length, entry + 4);
         } else {
             fprintf(stderr, "OBFUSCATOR: direttiva non riconosciuta\n");
             ok = 0;
@@ -520,46 +570,65 @@ static int get_passphrase(char passphrase[PASSPHRASE_MAX_LEN]) {
             goto cleanup;
         }
     }
-    if (!tmp_pass[0]) {
+    if (passphrase_length == 0) {
         fprintf(stderr, "OBFUSCATOR: la passphrase è vuota\n");
         goto cleanup;
     }
-#ifdef OBFUSCATOR_CACHE_PASSPHRASE
-    memcpy(cached_passphrase, tmp_pass, PASSPHRASE_MAX_LEN);
+#ifdef OBFUSCATOR_USE_ARGON2
+    kdf_result = argon2id_hash_raw(ARGON2_TIME_COST, ARGON2_MEMORY_COST_KIB, ARGON2_PARALLELISM, passphrase, passphrase_length, master_key_salt, sizeof(master_key_salt) - 1, master_key, KEY_LEN);
+    if (kdf_result != ARGON2_OK) {
+        fprintf(stderr, "OBFUSCATOR: Argon2id: %s\n", argon2_error_message(kdf_result));
+        goto cleanup;
+    }
+#else
+    kdf_result = PKCS5_PBKDF2_HMAC(passphrase, (int)passphrase_length, master_key_salt, sizeof(master_key_salt) - 1, PBKDF2_ITERATIONS, EVP_sha256(), KEY_LEN, master_key);
+    if (kdf_result != 1) {
+        fprintf(stderr, "OBFUSCATOR: PBKDF2 fallita\n");
+        goto cleanup;
+    }
+#endif
+#ifdef OBFUSCATOR_CACHE_MASTER_KEY
+    memcpy(cached_master_key, master_key, KEY_LEN);
     is_cached = true;
 #endif
-    memcpy(passphrase, tmp_pass, PASSPHRASE_MAX_LEN);
-    status = 1;
+    status = 0;
 cleanup:
-    OPENSSL_cleanse(tmp_pass, sizeof(tmp_pass));
-#ifdef OBFUSCATOR_CACHE_PASSPHRASE
-    pthread_mutex_unlock(&cache_mutex);
+    if (status != 0) OPENSSL_cleanse(master_key, KEY_LEN);
+    OPENSSL_cleanse(passphrase, sizeof(passphrase));
+#ifdef OBFUSCATOR_CACHE_MASTER_KEY
+    if (cache_locked) pthread_mutex_unlock(&cache_mutex);
 #endif
     return status;
 }
 
 static int derive_key(const unsigned char *salt, unsigned char key[KEY_LEN]) {
-    char passphrase[PASSPHRASE_MAX_LEN] = "";
-    if (!get_passphrase(passphrase)) {
+    static const unsigned char info[] = "obfuscator AES-256-GCM key";
+    unsigned char master_key[KEY_LEN];
+    if (get_master_key(master_key) != 0) {
         return -1;
     }
-#ifdef OBFUSCATOR_USE_ARGON2
-    int result = argon2id_hash_raw(ARGON2_TIME_COST, ARGON2_MEMORY_COST_KIB, ARGON2_PARALLELISM, passphrase, strnlen(passphrase, PASSPHRASE_MAX_LEN), salt, SALT_LEN, key, KEY_LEN);
-    if (result != ARGON2_OK) {
-        fprintf(stderr, "OBFUSCATOR: Argon2id: %s\n", argon2_error_message(result));
-        OPENSSL_cleanse(passphrase, PASSPHRASE_MAX_LEN);
+
+    EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_HKDF, NULL);
+    if (!ctx) {
+        fprintf(stderr, "OBFUSCATOR: creazione contesto HKDF fallita\n");
+        OPENSSL_cleanse(master_key, sizeof(master_key));
         OPENSSL_cleanse(key, KEY_LEN);
         return -1;
     }
-#else
-    int result = PKCS5_PBKDF2_HMAC(passphrase, (int)strnlen(passphrase, PASSPHRASE_MAX_LEN), salt, SALT_LEN, PBKDF2_ITERATIONS, EVP_sha256(), KEY_LEN, key);
-    if (result != 1) {
-        fprintf(stderr, "OBFUSCATOR: PBKDF2 fallita\n");
-        OPENSSL_cleanse(passphrase, PASSPHRASE_MAX_LEN);
+    size_t key_length = KEY_LEN;
+    int result = EVP_PKEY_derive_init(ctx) > 0 &&
+                 EVP_PKEY_CTX_set_hkdf_md(ctx, EVP_sha256()) > 0 &&
+                 EVP_PKEY_CTX_set1_hkdf_salt(ctx, salt, SALT_LEN) > 0 &&
+                 EVP_PKEY_CTX_set1_hkdf_key(ctx, master_key, KEY_LEN) > 0 &&
+                 EVP_PKEY_CTX_add1_hkdf_info(ctx, info, sizeof(info) - 1) > 0 &&
+                 EVP_PKEY_derive(ctx, key, &key_length) > 0 &&
+                 key_length == KEY_LEN;
+    EVP_PKEY_CTX_free(ctx);
+    OPENSSL_cleanse(master_key, sizeof(master_key));
+    if (!result) {
+        fprintf(stderr, "OBFUSCATOR: derivazione HKDF-SHA256 fallita\n");
         OPENSSL_cleanse(key, KEY_LEN);
         return -1;
     }
-#endif
-    OPENSSL_cleanse(passphrase, PASSPHRASE_MAX_LEN);
     return 0;
 }

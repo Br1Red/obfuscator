@@ -2,10 +2,10 @@
 #define OBFUSCATOR_CFG_H
 
 // Maximum length of the passphrase.
-#define PASSPHRASE_MAX_LEN 256
+#define PASSPHRASE_MAX_LEN 4096
 
-// If OBFUSCATOR_CACHE_PASSPHRASE is defined, the passphrase will be cached in memory.
-#define OBFUSCATOR_CACHE_PASSPHRASE
+// If OBFUSCATOR_CACHE_MASTER_KEY is defined, the derived master key is cached in memory.
+#define OBFUSCATOR_CACHE_MASTER_KEY
 
 // If OBFUSCATOR_USE_ARGON2 is defined, Argon2id will be used for key derivation.
 // Otherwise, PBKDF2-HMAC-SHA256 will be used.

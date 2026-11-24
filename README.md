@@ -12,14 +12,18 @@ header containing reversibly obfuscated strings.
 - OpenSSL development files and `libcrypto`
 - Argon2 development files and `libargon2`
 
-The feature and passphrase-cache defines are in `obfuscator_cfg.h`. By
-default, `OBFUSCATOR_USE_ARGON2` enables Argon2id key derivation and
-`OBFUSCATOR_CACHE_PASSPHRASE` keeps the assembled passphrase in memory for
-reuse during the process lifetime. Change these defines in that header to
-adjust the configuration. The key-derivation parameters can also be tuned
+The feature and key-cache defines are in `obfuscator_cfg.h`. By default,
+`OBFUSCATOR_USE_ARGON2` enables Argon2id key derivation and
+`OBFUSCATOR_CACHE_MASTER_KEY` keeps the derived master key in memory for reuse
+during the process lifetime, rather than caching the assembled passphrase.
+Change these defines in that header to adjust the configuration. The
+key-derivation parameters can also be tuned
 there: `ARGON2_TIME_COST`, `ARGON2_MEMORY_COST_KIB`, and
-`ARGON2_PARALLELISM` for Argon2id, or `PBKDF2_ITERATIONS` for PBKDF2. Keep the
-same algorithm and parameters when decrypting existing ciphertexts.
+`ARGON2_PARALLELISM` for Argon2id, or `PBKDF2_ITERATIONS` for PBKDF2. The
+selected KDF uses a fixed application-specific salt to produce the master
+key. HKDF-SHA256 uses each ciphertext's random salt to derive its AES-256-GCM
+key. Keep the same KDF and parameters when decrypting ciphertexts. Ciphertexts
+created with the previous per-ciphertext KDF key schedule are not compatible.
 
 ## Build
 
@@ -43,14 +47,18 @@ str:some secret text
 file:/path/to/a/passphrase-file
 file:$HOME/.config/obfuscator/passphrase
 file:${SECRET_DIR}/passphrase
+cred:obfuscator_key
 ```
 
-`str:` appends its value directly. `file:` appends the contents of the
-specified file, with line endings removed. File paths are resolved relative to
-the process's current working directory and support `$NAME` and `${NAME}`
-environment-variable references. An unset variable or malformed braced
-reference is an error; paths are not evaluated by a shell. The combined
-passphrase must be non-empty and shorter than 256 bytes.
+`str:` appends its value directly. `file:` appends the file's bytes exactly as
+stored. File paths are resolved relative to the process's current
+working directory and support `$NAME` and `${NAME}` environment-variable
+references. An unset variable or malformed braced reference is an error;
+paths are not evaluated by a shell. The combined passphrase must be non-empty
+and shorter than 256 bytes. `cred:<key>` appends the bytes of
+`$CREDENTIALS_DIRECTORY/<key>` with the same binary handling; `<key>` must be a
+single file name, and the directive fails if `CREDENTIALS_DIRECTORY` is not
+set.
 
 To create a random key file for use with the `file:` directive, run this from
 the directory where you want the file to be created:
@@ -68,7 +76,7 @@ For a service managed by systemd, you can instead supply the key as a systemd
 credential. Add this directive to `obfuscator_secrets.txt`:
 
 ```text
-file:$CREDENTIALS_DIRECTORY/obfuscator_key
+cred:obfuscator_key
 ```
 
 Then configure the service to provide a credential with that name. For example,
@@ -154,11 +162,10 @@ cc -I. example.c -L. -lobfuscator -Wl,-rpath,'$ORIGIN' -o example
 ./example
 ```
 
-Key derivation is selected in `obfuscator_cfg.h`: with
-`OBFUSCATOR_USE_ARGON2` enabled, the implementation uses Argon2id; otherwise,
-it uses PBKDF2-HMAC-SHA256. The current Makefile still links with `-largon2`,
-so building without Argon2 also requires removing that linker flag from the
-Makefile.
+The KDF selection is controlled by `OBFUSCATOR_USE_ARGON2`: when enabled, the
+master key uses Argon2id; otherwise, it uses PBKDF2-HMAC-SHA256. The current
+Makefile still links with `-largon2`, so building without Argon2 also requires
+removing that linker flag from the Makefile.
 
 ## Obfuscating strings for C
 
