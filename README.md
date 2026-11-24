@@ -7,7 +7,8 @@ header containing reversibly obfuscated strings.
 ## Requirements
 
 - Linux on x86-64 (the command-line executable uses a Linux x86-64 startup
-  routine)
+  routine; secret-buffer protection requires `MADV_WIPEONFORK`, available
+  since Linux 4.14)
 - GNU Make and a C compiler
 - OpenSSL development files and `libcrypto`
 - Argon2 development files and `libargon2`
@@ -23,6 +24,15 @@ there: `ARGON2_TIME_COST`, `ARGON2_MEMORY_COST_KIB`, and
 selected KDF uses a fixed application-specific salt to produce the master
 key. HKDF-SHA256 uses each ciphertext's random salt to derive its AES-256-GCM
 key. Keep the same KDF and parameters when decrypting ciphertexts.
+
+The library uses dedicated `mlock`ed pages for its master-key buffers, including
+the cache, and for passphrase assembly and its temporary input buffers. If
+memory locking is unavailable or exceeds `RLIMIT_MEMLOCK`, key derivation fails.
+Growing the passphrase temporarily requires both the old and new buffers to be
+locked. These pages are cleared in forked children and the cache is recomputed
+on first use. OpenSSL and Argon2 may make their own temporary copies outside
+these pages. This does not protect against core dumps or other disclosure of
+process memory.
 
 ## Build
 
